@@ -1,7 +1,10 @@
-# hash:sha256:f021ab0082d32d2954b63da31e988d47a581ca94879eb15b3627e51ed45c93a3
+# hash:sha256:477083bdc51a1db7ab0fde07f5986c90969d9e8f02ff81485111a894638bce59
 ARG REGISTRY_HOST
-FROM $REGISTRY_HOST/codeocean/mambaforge3:24.5.0-0-python3.12.4-ubuntu22.04
+FROM $REGISTRY_HOST/codeocean/code-server-python-extensions-pack:v5.0
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG GIT_ASKPASS
 COPY git-ask-pass /
+
+RUN pip install -U --no-cache-dir \
+    smartsheet-python-sdk==4.2.0
