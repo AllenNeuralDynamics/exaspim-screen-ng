@@ -4,13 +4,18 @@ Reads a dataset's ``data_description.json`` to determine the dataset name and
 subject ID, builds a Neuroglancer link pointing at the ``neuroglancer.json`` in
 S3, finds the matching row in the Smartsheet (by subject ID in the "Sample"
 column), and writes the link to the "1X Screening Link" column.
+
+Before touching the Smartsheet (including on dry run), writes derived-asset
+metadata and a copy of ``neuroglancer.json`` to the results directory.
 """
 
 import argparse
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
+from exaspim_screen_ng.metadata import write_derived_asset
 from exaspim_screen_ng.smartsheet_link import (
     DEFAULT_BUCKET,
     DEFAULT_DATA_GLOB,
@@ -86,7 +91,9 @@ def main(argv: list[str] | None = None) -> int:
     OSError
         If the ``CUSTOM_KEY`` environment variable is not set.
     """
+    start = datetime.now(tz=timezone.utc)
     args = parse_args(argv)
+    results_dir = Path(args.results_dir)
 
     dd_path = find_data_description(args.data_description)
     dataset_name, subject_id = load_metadata(dd_path)
@@ -96,6 +103,20 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Subject ID:   {subject_id}")
     print(f"Neuroglancer: {link}")
 
+    derived = write_derived_asset(
+        source_dir=Path(dd_path).parent,
+        results_dir=results_dir,
+        bucket=args.bucket,
+        start=start,
+        end=datetime.now(tz=timezone.utc),
+        parameters={
+            "bucket": args.bucket,
+            "sheet_id": args.sheet_id,
+            "dry_run": args.dry_run,
+        },
+    )
+    print(f"Derived asset: {derived.name}")
+
     token = os.environ.get("CUSTOM_KEY")
     if not token:
         raise OSError("Environment variable CUSTOM_KEY is not set.")
@@ -104,6 +125,6 @@ def main(argv: list[str] | None = None) -> int:
     if not updated:
         return 0
 
-    with open(Path(args.results_dir) / LINK_OUTPUT_NAME, "w", encoding="utf-8") as f:
+    with open(results_dir / LINK_OUTPUT_NAME, "w", encoding="utf-8") as f:
         json.dump({"url": link}, f)
     return 0
