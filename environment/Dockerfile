@@ -7,4 +7,4 @@ ARG GIT_ASKPASS
 COPY git-ask-pass /
 
 RUN pip install -U --no-cache-dir \
-    "exaspim-screen-ng @ git+https://github.com/AllenNeuralDynamics/exaspim-screen-ng@v0.1.0"
+    "exaspim-screen-ng @ git+https://github.com/AllenNeuralDynamics/exaspim-screen-ng"
