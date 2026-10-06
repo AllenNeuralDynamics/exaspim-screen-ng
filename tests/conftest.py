@@ -1,9 +1,20 @@
-"""Shared test fakes for the Smartsheet client and sheet objects."""
+"""Shared test fixtures: Smartsheet fakes and a source data asset."""
 
+import json
 from dataclasses import dataclass, field
+from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import pytest
+from aind_data_schema.components.identifiers import Person
+from aind_data_schema.components.subjects import MouseSubject, Sex
+from aind_data_schema.core.data_description import DataDescription, Funding
+from aind_data_schema.core.subject import Subject
+from aind_data_schema_models.data_name_patterns import DataLevel
+from aind_data_schema_models.modalities import Modality
+from aind_data_schema_models.organizations import Organization
+from aind_data_schema_models.species import Species, Strain
 
 from exaspim_screen_ng import smartsheet_link
 
@@ -78,3 +89,46 @@ def fake_client(monkeypatch: pytest.MonkeyPatch) -> FakeClient:
     client = FakeClient(make_sheet([111111.0, 787425.0]))
     monkeypatch.setattr(smartsheet_link.smartsheet, "Smartsheet", lambda token: client)
     return client
+
+
+SOURCE_NAME = "exaSPIM_787425_2025-01-01_00-00-00"
+SUBJECT_ID = "787425"
+
+
+def make_data_description() -> DataDescription:
+    return DataDescription(
+        name=SOURCE_NAME,
+        subject_id=SUBJECT_ID,
+        creation_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        institution=Organization.AIND,
+        funding_source=[Funding(funder=Organization.AI)],
+        data_level=DataLevel.RAW,
+        modalities=[Modality.SPIM],
+        project_name="exaSPIM",
+        investigators=[Person(name="Jane Doe")],
+    )
+
+
+def make_subject() -> Subject:
+    return Subject(
+        subject_id=SUBJECT_ID,
+        subject_details=MouseSubject(
+            sex=Sex.FEMALE,
+            date_of_birth=date(2024, 10, 1),
+            strain=Strain.C57BL_6J,
+            species=Species.HOUSE_MOUSE,
+            genotype="wt/wt",
+            source=Organization.JAX,
+        ),
+    )
+
+
+@pytest.fixture
+def source_dir(tmp_path: Path) -> Path:
+    """Source asset directory with valid core JSONs and a neuroglancer.json."""
+    path = tmp_path / "data" / SOURCE_NAME
+    path.mkdir(parents=True)
+    make_data_description().write_standard_file(output_directory=path)
+    make_subject().write_standard_file(output_directory=path)
+    (path / "neuroglancer.json").write_text(json.dumps({"layers": []}), encoding="utf-8")
+    return path
