@@ -15,7 +15,11 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from exaspim_screen_ng.metadata import write_derived_asset
+from exaspim_screen_ng.metadata import (
+    NEUROGLANCER_JSON,
+    read_neuroglancer_link,
+    write_derived_asset,
+)
 from exaspim_screen_ng.smartsheet_link import (
     DEFAULT_BUCKET,
     DEFAULT_DATA_GLOB,
@@ -96,17 +100,19 @@ def main(argv: list[str] | None = None) -> int:
     results_dir = Path(args.results_dir)
 
     dd_path = find_data_description(args.data_description)
+    source_dir = Path(dd_path).parent
     dataset_name, subject_id = load_metadata(dd_path)
-    link = build_neuroglancer_link(args.bucket, dataset_name)
+    link = read_neuroglancer_link(source_dir / NEUROGLANCER_JSON)
 
     print(f"Dataset:      {dataset_name}")
     print(f"Subject ID:   {subject_id}")
     print(f"Neuroglancer: {link}")
 
     derived = write_derived_asset(
-        source_dir=Path(dd_path).parent,
+        source_dir=source_dir,
         results_dir=results_dir,
         bucket=args.bucket,
+        neuroglancer_url=link,
         start=start,
         end=datetime.now(tz=timezone.utc),
         parameters={
