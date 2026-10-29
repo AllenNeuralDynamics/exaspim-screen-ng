@@ -10,9 +10,10 @@ metric whose reference is the raw Neuroglancer URL stored in the source
 import json
 import platform
 import shutil
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime
-from importlib.metadata import distribution
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,10 @@ from aind_data_schema_models.process_names import ProcessName
 from exaspim_screen_ng import __version__
 
 PACKAGE_NAME = "exaspim-screen-ng"
+PACKAGE_MODULE = "exaspim_screen_ng"
+# Capsule root in an interactive session. ``/code`` is a separate mount, so the
+# repository is never reachable by walking up from this file.
+SESSION_CAPSULE_ROOT = Path("/root/capsule")
 REPO_URL = "https://github.com/AllenNeuralDynamics/exaspim-screen-ng"
 RUN_SCRIPT = Path("code/run")
 PROCESS_NAME = "processed"
@@ -135,12 +140,71 @@ def load_source_core(source_dir: Path) -> tuple[dict[str, DataCoreModel], list[P
     return core, passthrough
 
 
+def _git_commit_hash(path: Path) -> str | None:
+    """Return the HEAD commit of the Git repository containing ``path``."""
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip() or None
+
+
 def _installed_commit_hash() -> str | None:
-    """Return the Git commit this package was installed from, if recorded by pip."""
-    direct_url = distribution(PACKAGE_NAME).read_text("direct_url.json")
+    """Return the commit pip recorded, only if the installed copy is running.
+
+    The package ships inside the capsule's ``code`` folder, so an installed copy
+    elsewhere describes code that did not run and must not be reported.
+    """
+    try:
+        dist = distribution(PACKAGE_NAME)
+    except PackageNotFoundError:
+        return None
+    installed = Path(str(dist.locate_file(f"{PACKAGE_MODULE}/__init__.py"))).resolve()
+    if installed.parent != Path(__file__).resolve().parent:
+        return None
+    direct_url = dist.read_text("direct_url.json")
     if not direct_url:
         return None
     return json.loads(direct_url).get("vcs_info", {}).get("commit_id")
+
+
+def _repo_candidates() -> list[Path]:
+    """Return directories that may hold the running code's Git repository.
+
+    ``/code`` is mounted on its own, so the repository root is looked for beside
+    it: the capsule root of a cloned checkout (as a pipeline run gets), then the
+    capsule root of an interactive session.
+    """
+    here = Path(__file__).resolve().parent
+    candidates = [here, here.parents[1], SESSION_CAPSULE_ROOT]
+    unique: list[Path] = []
+    for candidate in candidates:
+        if candidate not in unique:
+            unique.append(candidate)
+    return unique
+
+
+def code_commit_hash() -> str | None:
+    """Return the Git commit of the code that is actually running.
+
+    The repository holding this file is authoritative, since the package runs
+    from the capsule's ``code`` folder. pip's recorded commit is used only when
+    the imported module is the installed copy, and ``None`` is reported when
+    neither source can identify the running code.
+    """
+    for candidate in _repo_candidates():
+        commit = _git_commit_hash(candidate)
+        if commit is not None:
+            return commit
+    return _installed_commit_hash()
 
 
 def build_code(source_name: str, parameters: dict[str, Any]) -> Code:
@@ -163,7 +227,7 @@ def build_code(source_name: str, parameters: dict[str, Any]) -> Code:
         url=REPO_URL,
         name=PACKAGE_NAME,
         version=__version__,
-        commit_hash=_installed_commit_hash(),
+        commit_hash=code_commit_hash(),
         run_script=RUN_SCRIPT,
         language="Python",
         language_version=platform.python_version(),

@@ -78,21 +78,78 @@ class TestLoadSourceCore:
             load_source_core(tmp_path)
 
 
-class TestInstalledCommitHash:
-    @pytest.mark.parametrize(
-        ("direct_url", "expected"),
-        [
-            (None, None),
-            (json.dumps({"url": "file:///x", "dir_info": {"editable": True}}), None),
-            (json.dumps({"vcs_info": {"vcs": "git", "commit_id": "abc1234"}}), "abc1234"),
-        ],
-    )
-    def test_direct_url(
-        self, monkeypatch: pytest.MonkeyPatch, direct_url: str | None, expected: str | None
+class TestGitCommitHash:
+    def test_returns_head(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        completed = SimpleNamespace(returncode=0, stdout="abcdef1\n")
+        monkeypatch.setattr(metadata.subprocess, "run", lambda *a, **k: completed)
+        assert metadata._git_commit_hash(tmp_path) == "abcdef1"
+
+    def test_none_when_not_a_repository(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        dist = SimpleNamespace(read_text=lambda name: direct_url)
+        completed = SimpleNamespace(returncode=128, stdout="")
+        monkeypatch.setattr(metadata.subprocess, "run", lambda *a, **k: completed)
+        assert metadata._git_commit_hash(tmp_path) is None
+
+    def test_none_when_git_is_absent(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        def boom(*args: object, **kwargs: object) -> None:
+            raise OSError("git not found")
+
+        monkeypatch.setattr(metadata.subprocess, "run", boom)
+        assert metadata._git_commit_hash(tmp_path) is None
+
+
+class TestInstalledCommitHash:
+    DIRECT_URL = json.dumps({"vcs_info": {"vcs": "git", "commit_id": "abc1234"}})
+
+    def _dist(self, init_path: Path) -> SimpleNamespace:
+        return SimpleNamespace(
+            locate_file=lambda name: str(init_path),
+            read_text=lambda name: self.DIRECT_URL,
+        )
+
+    def test_ignored_when_installed_copy_is_not_running(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        dist = self._dist(tmp_path / "exaspim_screen_ng" / "__init__.py")
         monkeypatch.setattr(metadata, "distribution", lambda name: dist)
-        assert metadata._installed_commit_hash() == expected
+        assert metadata._installed_commit_hash() is None
+
+    def test_reported_when_installed_copy_is_running(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dist = self._dist(Path(metadata.__file__).resolve().parent / "__init__.py")
+        monkeypatch.setattr(metadata, "distribution", lambda name: dist)
+        assert metadata._installed_commit_hash() == "abc1234"
+
+    def test_none_without_direct_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        dist = SimpleNamespace(
+            locate_file=lambda name: str(Path(metadata.__file__).resolve().parent / "__init__.py"),
+            read_text=lambda name: None,
+        )
+        monkeypatch.setattr(metadata, "distribution", lambda name: dist)
+        assert metadata._installed_commit_hash() is None
+
+
+class TestCodeCommitHash:
+    def test_prefers_the_running_repository(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(metadata, "_git_commit_hash", lambda path: "deadbee")
+        monkeypatch.setattr(metadata, "_installed_commit_hash", lambda: "abc1234")
+        assert metadata.code_commit_hash() == "deadbee"
+
+    def test_falls_back_to_installed_commit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(metadata, "_git_commit_hash", lambda path: None)
+        monkeypatch.setattr(metadata, "_installed_commit_hash", lambda: "abc1234")
+        assert metadata.code_commit_hash() == "abc1234"
+
+    def test_none_when_the_running_code_cannot_be_identified(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(metadata, "_git_commit_hash", lambda path: None)
+        monkeypatch.setattr(metadata, "_installed_commit_hash", lambda: None)
+        assert metadata.code_commit_hash() is None
 
 
 def test_build_processing() -> None:
