@@ -28,7 +28,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/exaspim_screen_ng"]
+packages = ["code/exaspim_screen_ng"]
 
 [tool.ruff]
 line-length = 100
