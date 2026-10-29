@@ -1,15 +1,16 @@
 """Derived-asset metadata for the 1X screening capsule.
 
 The capsule's ``/results`` folder becomes a derived data asset. This module
-inherits the source asset's core metadata, appends a processing step for this
-package, and adds a pending manual QC metric whose reference is the raw
-Neuroglancer URL stored in the source ``neuroglancer.json``.
+copies through the source asset's core metadata it does not change, rewrites
+data description, processing and quality control, and adds a pending manual QC
+metric whose reference is the raw Neuroglancer URL stored in the source
+``neuroglancer.json``.
 """
 
 import json
 import platform
 import shutil
-import warnings
+from dataclasses import dataclass
 from datetime import datetime
 from importlib.metadata import distribution
 from pathlib import Path
@@ -17,18 +18,12 @@ from typing import Any
 
 from aind_data_schema.base import DataCoreModel
 from aind_data_schema.components.identifiers import Code, DataAsset
-from aind_data_schema.core.acquisition import Acquisition
 from aind_data_schema.core.data_description import DataDescription
-from aind_data_schema.core.instrument import Instrument
-from aind_data_schema.core.metadata import Metadata
-from aind_data_schema.core.procedures import Procedures
 from aind_data_schema.core.processing import DataProcess, Processing, ProcessStage
 from aind_data_schema.core.quality_control import QCMetric, QCStatus, QualityControl, Stage, Status
-from aind_data_schema.core.subject import Subject
 from aind_data_schema.utils.inheritance import derive_data_description
 from aind_data_schema_models.modalities import Modality
 from aind_data_schema_models.process_names import ProcessName
-from pydantic import ValidationError
 
 from exaspim_screen_ng import __version__
 
@@ -44,19 +39,20 @@ QC_METRIC_NAME = "1X screening"
 QC_TAG_KEY = "screening"
 QC_TAG_VALUE = "1X"
 
-CORE_MODELS: dict[str, type[DataCoreModel]] = {
+MODIFIED_MODELS: dict[str, type[DataCoreModel]] = {
     "data_description": DataDescription,
-    "subject": Subject,
-    "procedures": Procedures,
-    "instrument": Instrument,
-    "acquisition": Acquisition,
     "processing": Processing,
     "quality_control": QualityControl,
 }
 
-# Core files allowed to fail validation if every error is inside an object of
-# this type. Such files are copied through unvalidated instead of being loaded.
-PASSTHROUGH_ON_KNOWN_ERRORS: dict[str, str] = {"procedures": "Injection"}
+# Core files this capsule does not change. They are copied byte-for-byte and are
+# never parsed, so schema problems in them cannot fail the run.
+PASSTHROUGH_FILES: tuple[str, ...] = (
+    "subject.json",
+    "procedures.json",
+    "instrument.json",
+    "acquisition.json",
+)
 
 
 def read_neuroglancer_link(path: Path) -> str:
@@ -84,11 +80,6 @@ def read_neuroglancer_link(path: Path) -> str:
         raise KeyError(f"'{NG_LINK_KEY}' not found in {path}")
     return state[NG_LINK_KEY]
 
-PASSTHROUGH_ON_KNOWN_ERRORS = {"procedures": "Injection"}  # field -> loc tag
-
-def _is_known_issue(exc: ValidationError, tag: str) -> bool:
-    return all(tag in err["loc"] for err in exc.errors())
-
 def _load_core_file(path: Path, model: type[DataCoreModel]) -> DataCoreModel:
     """Validate a core JSON file against the installed schema version.
 
@@ -102,60 +93,46 @@ def _load_core_file(path: Path, model: type[DataCoreModel]) -> DataCoreModel:
     return model.model_validate(data)
 
 
-def load_source_metadata(source_dir: Path, bucket: str) -> tuple[Metadata, list[Path]]:
-    """Load the source asset's core metadata files into a ``Metadata`` object.
+def load_source_core(source_dir: Path) -> tuple[dict[str, DataCoreModel], list[Path]]:
+    """Load the core files this capsule rewrites and list the ones it copies.
 
-    Core files listed in ``PASSTHROUGH_ON_KNOWN_ERRORS`` whose only validation
-    errors are known issues are left out of the ``Metadata`` and returned
-    separately so they can be copied through unchanged.
+    Only the files in ``MODIFIED_MODELS`` are validated against aind-data-schema.
+    The files in ``PASSTHROUGH_FILES`` are never parsed, so validation problems in
+    metadata this capsule does not change cannot fail the run.
 
     Parameters
     ----------
     source_dir : Path
         Directory containing ``data_description.json`` and any other core files.
-    bucket : str
-        S3 bucket holding the source asset, used to set ``location``.
 
     Returns
     -------
-    Metadata
-        Source metadata. Core files that are absent or passed through are None.
+    dict of str to DataCoreModel
+        Loaded models for the core files this capsule rewrites, keyed by field
+        name. Files that are absent are omitted.
     list of Path
-        Core files that failed validation only on known issues.
+        Existing source files to copy through unchanged.
 
     Raises
     ------
     FileNotFoundError
         If ``data_description.json`` is missing.
     pydantic.ValidationError
-        If a core file fails validation for reasons other than a known issue.
+        If one of the rewritten core files fails validation.
     """
-    core: dict[str, Any] = {}
-    passthrough: list[Path] = []
-    for field_name, model in CORE_MODELS.items():
+    core: dict[str, DataCoreModel] = {}
+    for field_name, model in MODIFIED_MODELS.items():
         path = source_dir / model.default_filename()
-        if not path.is_file():
-            continue
-        try:
+        if path.is_file():
             core[field_name] = _load_core_file(path, model)
-        except ValidationError as exc:
-            tag = PASSTHROUGH_ON_KNOWN_ERRORS.get(field_name)
-            if tag is None or not _is_known_issue(exc, tag):
-                raise
-            warnings.warn(
-                f"{path.name}: {exc.error_count()} known {tag} validation errors; "
-                "copying unvalidated.",
-                stacklevel=2,
-            )
-            passthrough.append(path)
 
-    data_description = core.get("data_description")
-    if data_description is None:
+    if "data_description" not in core:
         raise FileNotFoundError(f"data_description.json not found in {source_dir}")
 
-    name = data_description.name
-    metadata = Metadata(name=name, location=f"s3://{bucket}/{name}", **core)
-    return metadata, passthrough
+    passthrough = [
+        source_dir / name for name in PASSTHROUGH_FILES if (source_dir / name).is_file()
+    ]
+    return core, passthrough
 
 
 def _installed_commit_hash() -> str | None:
@@ -262,49 +239,80 @@ def build_quality_control(neuroglancer_url: str, timestamp: datetime) -> Quality
     return QualityControl(metrics=[metric], default_grouping=[QC_TAG_KEY])
 
 
+@dataclass(frozen=True)
+class DerivedAsset:
+    """Identity of the derived asset and the core models written for it.
+
+    Attributes
+    ----------
+    name : str
+        Derived asset name.
+    location : str
+        S3 location the derived asset will be stored at.
+    data_description, processing, quality_control : DataCoreModel
+        The three core models this capsule writes.
+    """
+
+    name: str
+    location: str
+    data_description: DataDescription
+    processing: Processing
+    quality_control: QualityControl
+
+
 def build_derived_metadata(
-    source: Metadata,
+    source_core: dict[str, DataCoreModel],
     bucket: str,
     neuroglancer_url: str,
     start: datetime,
     end: datetime,
     parameters: dict[str, Any],
-) -> Metadata:
-    """Derive metadata for the results asset from the source metadata.
+) -> DerivedAsset:
+    """Build the three core models for the derived asset.
 
-    The derived name is computed up front with ``end`` as ``creation_time`` so
-    ``location`` matches the name ``from_metadata`` produces.
+    No ``Metadata`` object is assembled, so cross-file checks over core metadata
+    this capsule does not change are never run.
 
     Parameters
     ----------
-    source : Metadata
-        Source asset metadata with a data description.
+    source_core : dict of str to DataCoreModel
+        Source models from :func:`load_source_core`; ``data_description`` is
+        required, ``processing`` and ``quality_control`` are optional.
     bucket : str
         S3 bucket the derived asset will be stored in.
     neuroglancer_url : str
         Raw Neuroglancer viewer URL used as the QC reference.
     start, end : datetime
-        Timezone-aware start and end of the run.
+        Timezone-aware start and end of the run. ``end`` is the creation time of
+        the derived asset.
     parameters : dict
         Run parameters to record in processing.
 
     Returns
     -------
-    Metadata
-        Derived metadata with inherited core files, accumulated processing and
-        quality control.
+    DerivedAsset
+        Derived name, location, and the derived data description, accumulated
+        processing and accumulated quality control.
     """
-    source_name = source.data_description.name
-    derived_name = derive_data_description(
-        source.data_description, PROCESS_NAME, creation_time=end
-    ).name
-    return Metadata.from_metadata(
-        source,
-        process_name=PROCESS_NAME,
-        location=f"s3://{bucket}/{derived_name}",
-        new_processing=build_processing(start, end, source_name, parameters),
-        new_quality_control=build_quality_control(neuroglancer_url, end),
-        creation_time=end,
+    source_dd = source_core["data_description"]
+    derived_dd = derive_data_description(source_dd, PROCESS_NAME, creation_time=end)
+
+    processing = build_processing(start, end, source_dd.name, parameters)
+    source_processing = source_core.get("processing")
+    if source_processing is not None:
+        processing = source_processing + processing
+
+    quality_control = build_quality_control(neuroglancer_url, end)
+    source_quality_control = source_core.get("quality_control")
+    if source_quality_control is not None:
+        quality_control = source_quality_control + quality_control
+
+    return DerivedAsset(
+        name=derived_dd.name,
+        location=f"s3://{bucket}/{derived_dd.name}",
+        data_description=derived_dd,
+        processing=processing,
+        quality_control=quality_control,
     )
 
 
@@ -316,11 +324,11 @@ def write_derived_asset(
     start: datetime,
     end: datetime,
     parameters: dict[str, Any],
-) -> Metadata:
-    """Write derived metadata and the source ``neuroglancer.json`` to ``results_dir``.
+) -> DerivedAsset:
+    """Write the derived asset's metadata and ``neuroglancer.json`` to ``results_dir``.
 
-    Core files that failed validation only on known issues are copied through
-    unchanged.
+    The rewritten core files are written from models; every other core file is
+    copied byte-for-byte from the source without being validated.
 
     Parameters
     ----------
@@ -339,8 +347,8 @@ def write_derived_asset(
 
     Returns
     -------
-    Metadata
-        The derived metadata that was written.
+    DerivedAsset
+        The derived asset that was written.
 
     Raises
     ------
@@ -351,13 +359,14 @@ def write_derived_asset(
     if not neuroglancer_json.is_file():
         raise FileNotFoundError(f"{NEUROGLANCER_JSON} not found in {source_dir}")
 
-    source, passthrough = load_source_metadata(source_dir, bucket)
+    source_core, passthrough = load_source_core(source_dir)
     derived = build_derived_metadata(
-        source, bucket, neuroglancer_url, start, end, parameters
+        source_core, bucket, neuroglancer_url, start, end, parameters
     )
 
     results_dir.mkdir(parents=True, exist_ok=True)
-    derived.write_standard_files(output_directory=results_dir)
+    for model in (derived.data_description, derived.processing, derived.quality_control):
+        model.write_standard_file(output_directory=results_dir)
     for path in passthrough:
         shutil.copyfile(path, results_dir / path.name)
     shutil.copyfile(neuroglancer_json, results_dir / NEUROGLANCER_JSON)

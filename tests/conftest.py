@@ -93,6 +93,9 @@ def fake_client(monkeypatch: pytest.MonkeyPatch) -> FakeClient:
 
 SOURCE_NAME = "exaSPIM_787425_2025-01-01_00-00-00"
 SUBJECT_ID = "787425"
+NG_LINK = (
+    f"https://neuroglancer-demo.appspot.com/#!s3://aind-open-data/{SOURCE_NAME}/neuroglancer.json"
+)
 
 
 def make_data_description() -> DataDescription:
@@ -130,5 +133,7 @@ def source_dir(tmp_path: Path) -> Path:
     path.mkdir(parents=True)
     make_data_description().write_standard_file(output_directory=path)
     make_subject().write_standard_file(output_directory=path)
-    (path / "neuroglancer.json").write_text(json.dumps({"layers": []}), encoding="utf-8")
+    (path / "neuroglancer.json").write_text(
+        json.dumps({"ng_link": NG_LINK, "layers": []}), encoding="utf-8"
+    )
     return path
