@@ -7,4 +7,5 @@ ARG GIT_ASKPASS
 COPY git-ask-pass /
 
 RUN pip install -U --no-cache-dir \
-    smartsheet-python-sdk==4.2.0
+    "exaspim-screen-ng @ git+https://github.com/AllenNeuralDynamics/exaspim-screen-ng@98de97c766fab85a635457a530f9beb277a31603"
+
